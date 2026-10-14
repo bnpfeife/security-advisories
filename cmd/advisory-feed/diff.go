@@ -1,11 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 )
 
 // CDN reads the feeds currently served to consumers.
@@ -14,43 +14,51 @@ type CDN struct {
 	HTTP    *http.Client // injected so tests can point at httptest servers
 }
 
-// Fetch returns the served feed for product, or nil when the CDN has none,
-// which is the state before the first publish. Any other non-200 status is
-// an error, so the caller never publishes on top of a state it cannot see.
-func (c *CDN) Fetch(ctx context.Context, product string) (*Feed, error) {
+// Fetch returns the served feed for product, parsed and as the exact bytes
+// served, or nil for both when the CDN has none, which is the state before
+// the first publish. Any other non-200 status is an error, so the caller
+// never publishes on top of a state it cannot see.
+func (c *CDN) Fetch(ctx context.Context, product string) (*Feed, []byte, error) {
 	url := joinURL(c.BaseURL, feedPath(product))
 	status, _, body, err := fetch(ctx, c.HTTP, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	switch status {
 	case http.StatusNotFound:
-		return nil, nil
+		return nil, nil, nil
 	case http.StatusOK:
 	default:
-		return nil, fmt.Errorf("GET %s: HTTP %d", url, status)
+		return nil, nil, fmt.Errorf("GET %s: HTTP %d", url, status)
 	}
 	var f Feed
 	if err := json.Unmarshal(body, &f); err != nil {
-		return nil, fmt.Errorf("parse served feed %s: %w", url, err)
+		return nil, nil, fmt.Errorf("parse served feed %s: %w", url, err)
 	}
-	return &f, nil
+	return &f, body, nil
 }
 
 // Unchanged reports whether data, a feed serialized with timestamp, has the
-// same content as served. Only feedTimestamp may differ. A missing served
-// feed is never unchanged.
-func Unchanged(data []byte, served *Feed, timestamp string) (bool, error) {
+// same content as served, the bytes the CDN returned. Only feedTimestamp
+// may differ. The two are compared as generic JSON rather than through the
+// Feed struct, so a served file whose shape differs from the current one,
+// for example by carrying a key the struct no longer declares, counts as
+// changed and is rewritten. A missing served feed is never unchanged.
+func Unchanged(data, served []byte, timestamp string) (bool, error) {
 	if served == nil {
 		return false, nil
 	}
-	c := *served
-	c.FeedTimestamp = timestamp
-	b, err := Marshal(&c)
-	if err != nil {
-		return false, err
+	var next, prev map[string]any
+	if err := json.Unmarshal(data, &next); err != nil {
+		return false, fmt.Errorf("parse generated feed: %w", err)
 	}
-	return bytes.Equal(data, b), nil
+	if err := json.Unmarshal(served, &prev); err != nil {
+		return false, fmt.Errorf("parse served feed: %w", err)
+	}
+	if _, ok := prev["feedTimestamp"]; ok {
+		prev["feedTimestamp"] = timestamp
+	}
+	return reflect.DeepEqual(next, prev), nil
 }
 
 // CheckShrink fails when next has fewer advisories than served. Advisories

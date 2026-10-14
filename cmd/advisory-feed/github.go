@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -68,12 +69,21 @@ type Client struct {
 	HTTP    *http.Client // injected so tests can point at httptest servers
 }
 
+// maxPages bounds pagination. At 100 advisories per page it allows 10,000
+// advisories, double the per-product limit, and bounds memory at maxPages
+// times the per-response cap in fetch.
+const maxPages = 100
+
 var nextLinkPattern = regexp.MustCompile(`<([^>]+)>;\s*rel="next"`)
 
 // ListAdvisories fetches every advisory the API returns for the
 // repository, following Link-header pagination. It does not filter by
 // state; callers decide which states to keep.
 func (c *Client) ListAdvisories(ctx context.Context) ([]RawAdvisory, error) {
+	base, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse API base URL %q: %w", c.BaseURL, err)
+	}
 	header := http.Header{}
 	header.Set("Accept", "application/vnd.github+json")
 	header.Set("X-GitHub-Api-Version", "2022-11-28")
@@ -82,7 +92,10 @@ func (c *Client) ListAdvisories(ctx context.Context) ([]RawAdvisory, error) {
 	}
 	next := joinURL(c.BaseURL, "repos/"+c.Repo+"/security-advisories?per_page=100")
 	var all []RawAdvisory
-	for next != "" {
+	for pages := 0; next != ""; pages++ {
+		if pages == maxPages {
+			return nil, fmt.Errorf("GET %s: more than %d pages of advisories; raise maxPages if the repository really has that many", next, maxPages)
+		}
 		status, hdr, body, err := fetch(ctx, c.HTTP, next, header)
 		if err != nil {
 			return nil, err
@@ -96,8 +109,26 @@ func (c *Client) ListAdvisories(ctx context.Context) ([]RawAdvisory, error) {
 		}
 		all = append(all, page...)
 		next = nextLink(hdr.Get("Link"))
+		if next != "" {
+			if err := checkOrigin(base, next); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return all, nil
+}
+
+// checkOrigin rejects a pagination URL whose scheme or host differs from
+// the configured API's, so the bearer token is never sent anywhere else.
+func checkOrigin(base *url.URL, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("parse pagination link %q: %w", raw, err)
+	}
+	if u.Scheme != base.Scheme || u.Host != base.Host {
+		return fmt.Errorf("pagination link %s is not on %s://%s", raw, base.Scheme, base.Host)
+	}
+	return nil
 }
 
 // nextLink extracts the rel="next" URL from a Link header, or "".

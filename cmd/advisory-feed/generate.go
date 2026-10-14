@@ -54,14 +54,14 @@ func Generate(ctx context.Context, client *Client, cdn *CDN, reg Registry, opts 
 			return Result{}, fmt.Errorf("feed for %s is %d bytes, over the %d byte limit", p, len(data), maxFeedBytes)
 		}
 		if cdn != nil {
-			served, err := cdn.Fetch(ctx, p)
+			served, servedBody, err := cdn.Fetch(ctx, p)
 			if err != nil {
 				return Result{}, err
 			}
 			if err := CheckShrink(f, served); err != nil && !opts.AllowShrink {
 				return Result{}, err
 			}
-			same, err := Unchanged(data, served, now)
+			same, err := Unchanged(data, servedBody, now)
 			if err != nil {
 				return Result{}, err
 			}

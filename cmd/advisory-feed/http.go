@@ -40,9 +40,15 @@ func joinURL(base, p string) string {
 	return strings.TrimRight(base, "/") + "/" + p
 }
 
+// truncate shortens s to at most n runes, cutting on a rune boundary so
+// that a multi-byte character is never split.
 func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
+	i := 0
+	for pos := range s {
+		if i == n {
+			return s[:pos] + "..."
+		}
+		i++
 	}
-	return s[:n] + "..."
+	return s
 }

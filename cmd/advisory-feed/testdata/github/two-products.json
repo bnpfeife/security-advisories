@@ -1,8 +1,8 @@
 [
   {
-    "ghsa_id": "GHSA-aaaa-bbbb-cccc",
+    "ghsa_id": "GHSA-cccc-ffff-gggg",
     "cve_id": "CVE-2026-31402",
-    "html_url": "https://github.com/influxdata/security-advisories/security/advisories/GHSA-aaaa-bbbb-cccc",
+    "html_url": "https://github.com/influxdata/security-advisories/security/advisories/GHSA-cccc-ffff-gggg",
     "summary": "Telegraf 1.38.1 and Telegraf Controller 1.2.0 security release",
     "description": "Telegraf 1.38.1 and Telegraf Controller 1.2.0 fix the following security issue.\r\n\r\n## Go toolchain\r\n\r\nUpdated to Go 1.26.1 to fix CVE-2026-31402 (`crypto/tls`), confirmed to affect both products.\r\n\r\n## References\r\n\r\n- [Telegraf 1.38.1 release notes](https://docs.influxdata.com/telegraf/v1/release-notes/#v1381)\r\n",
     "severity": "high",
@@ -33,9 +33,9 @@
     "credits": []
   },
   {
-    "ghsa_id": "GHSA-dddd-eeee-ffff",
+    "ghsa_id": "GHSA-hhhh-jjjj-mmmm",
     "cve_id": null,
-    "html_url": "https://github.com/influxdata/security-advisories/security/advisories/GHSA-dddd-eeee-ffff",
+    "html_url": "https://github.com/influxdata/security-advisories/security/advisories/GHSA-hhhh-jjjj-mmmm",
     "summary": "Telegraf 1.36.0 security release",
     "description": "Telegraf 1.36.0 fixes the following security issue.\r\n\r\n## Withdrawn\r\n\r\nThis advisory was published in error.\r\n",
     "severity": "low",
@@ -60,9 +60,9 @@
     "credits": []
   },
   {
-    "ghsa_id": "GHSA-1111-2222-3333",
+    "ghsa_id": "GHSA-2222-3333-4444",
     "cve_id": null,
-    "html_url": "https://github.com/influxdata/security-advisories/security/advisories/GHSA-1111-2222-3333",
+    "html_url": "https://github.com/influxdata/security-advisories/security/advisories/GHSA-2222-3333-4444",
     "summary": "Draft that must not appear in any feed",
     "description": "",
     "severity": null,

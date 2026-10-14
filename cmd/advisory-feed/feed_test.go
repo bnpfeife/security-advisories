@@ -6,6 +6,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -108,7 +109,7 @@ func TestBuildFeedsTwoProducts(t *testing.T) {
 	if len(tg.Advisories) != 2 {
 		t.Fatalf("telegraf advisories = %d, want 2 (published + withdrawn, draft skipped)", len(tg.Advisories))
 	}
-	if tg.Advisories[0].ID != "GHSA-aaaa-bbbb-cccc" || tg.Advisories[1].ID != "GHSA-dddd-eeee-ffff" {
+	if tg.Advisories[0].ID != "GHSA-cccc-ffff-gggg" || tg.Advisories[1].ID != "GHSA-hhhh-jjjj-mmmm" {
 		t.Errorf("order must be newest first: %s, %s", tg.Advisories[0].ID, tg.Advisories[1].ID)
 	}
 	if tg.Advisories[1].Withdrawn == nil {
@@ -169,7 +170,7 @@ func TestBuildFeedsCarriesNotice(t *testing.T) {
 }
 
 func TestMarshalDoesNotEscapeHTML(t *testing.T) {
-	f := &Feed{FeedVersion: feedVersion, Product: "p", Advisories: []Entry{{ID: "GHSA-aaaa-aaaa-aaaa", Description: "a <b> & c", Affected: []Range{}, CWEs: []CWE{}}}}
+	f := &Feed{FeedVersion: feedVersion, Product: "p", Advisories: []Entry{{ID: "GHSA-cccc-cccc-cccc", Description: "a <b> & c", Affected: []Range{}, CWEs: []CWE{}}}}
 	got, err := Marshal(f)
 	if err != nil {
 		t.Fatal(err)
@@ -179,14 +180,30 @@ func TestMarshalDoesNotEscapeHTML(t *testing.T) {
 	}
 }
 
-func TestBuildFeedsRejects(t *testing.T) {
-	base := func() RawAdvisory {
-		return RawAdvisory{
-			GHSAID: "GHSA-aaaa-aaaa-aaaa", HTMLURL: "https://example.test/a", Summary: "ok",
-			Severity: "low", State: "published", PublishedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
-			Vulnerabilities: []RawVulnerability{{Package: RawPackage{Name: "telegraf"}, VulnerableVersionRange: "< 1.0.0"}},
-		}
+// validAdvisory is a minimal published Telegraf advisory that passes every
+// validation rule. Tests mutate one field at a time.
+func validAdvisory(id string) RawAdvisory {
+	return RawAdvisory{
+		GHSAID: id, HTMLURL: "https://example.test/" + id, Summary: "ok",
+		Severity: "low", State: "published", PublishedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
+		Vulnerabilities: []RawVulnerability{{Package: RawPackage{Name: "telegraf"}, VulnerableVersionRange: "< 1.0.0"}},
 	}
+}
+
+// ghsaID returns a distinct id in the GHSA alphabet for n, for tests that
+// need many advisories.
+func ghsaID(n int) string {
+	const alphabet = "23456789cfghjmpqrvwx"
+	b := []byte("GHSA-cccc-cccc-2222")
+	for i := len(b) - 1; n > 0; i-- {
+		b[i] = alphabet[n%len(alphabet)]
+		n /= len(alphabet)
+	}
+	return string(b)
+}
+
+func TestBuildFeedsRejects(t *testing.T) {
+	base := func() RawAdvisory { return validAdvisory("GHSA-cccc-cccc-cccc") }
 	cases := []struct {
 		name    string
 		mutate  func(a *RawAdvisory)
@@ -200,8 +217,10 @@ func TestBuildFeedsRejects(t *testing.T) {
 		{"empty summary", func(a *RawAdvisory) { a.Summary = "" }, "empty summary"},
 		{"long summary", func(a *RawAdvisory) { a.Summary = strings.Repeat("x", 1001) }, "summary longer than 1000"},
 		{"long id", func(a *RawAdvisory) { a.GHSAID = strings.Repeat("G", 129) }, "ghsa_id longer than 128"},
+		{"missing id", func(a *RawAdvisory) { a.GHSAID = "" }, "missing ghsa_id"},
 		{"missing url", func(a *RawAdvisory) { a.HTMLURL = "" }, "missing html_url"},
-		{"missing dates", func(a *RawAdvisory) { a.PublishedAt = "" }, "published_at"},
+		{"missing published_at", func(a *RawAdvisory) { a.PublishedAt = "" }, "published_at"},
+		{"missing updated_at", func(a *RawAdvisory) { a.UpdatedAt = "" }, "updated_at"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -219,12 +238,91 @@ func TestBuildFeedsRejects(t *testing.T) {
 }
 
 func TestBuildFeedsSkipsDrafts(t *testing.T) {
-	draft := RawAdvisory{GHSAID: "GHSA-1111-2222-3333", State: "draft"}
+	draft := RawAdvisory{GHSAID: "GHSA-2222-3333-4444", State: "draft"}
 	feeds, err := BuildFeeds([]RawAdvisory{draft}, testRegistry)
 	if err != nil {
 		t.Fatalf("a draft must be skipped, not validated: %v", err)
 	}
 	if len(feeds["telegraf"].Advisories) != 0 {
 		t.Error("draft leaked into the feed")
+	}
+}
+
+// TestBuildFeedsKeepsEveryRowForAProduct covers the authoring guide's form
+// for a fix that ships on more than one release line: one Affected
+// products row per line, all naming the same package. Every row must reach
+// the feed, in row order.
+func TestBuildFeedsKeepsEveryRowForAProduct(t *testing.T) {
+	a := validAdvisory("GHSA-cccc-cccc-cccc")
+	a.Vulnerabilities = []RawVulnerability{
+		{Package: RawPackage{Name: "telegraf"}, VulnerableVersionRange: ">= 1.30.0, < 1.38.1", PatchedVersions: "1.38.1"},
+		{Package: RawPackage{Name: "telegraf"}, VulnerableVersionRange: ">= 1.39.0, < 1.39.2", PatchedVersions: "1.39.2"},
+	}
+	feeds, err := BuildFeeds([]RawAdvisory{a}, testRegistry)
+	if err != nil {
+		t.Fatalf("BuildFeeds: %v", err)
+	}
+	tg := feeds["telegraf"].Advisories
+	if len(tg) != 1 {
+		t.Fatalf("telegraf advisories = %d, want 1 entry carrying both ranges", len(tg))
+	}
+	ptr := func(s string) *string { return &s }
+	want := []Range{{Introduced: ptr("1.30.0"), Fixed: "1.38.1"}, {Introduced: ptr("1.39.0"), Fixed: "1.39.2"}}
+	if !reflect.DeepEqual(tg[0].Affected, want) {
+		t.Errorf("affected = %s, want both rows in row order", describeRanges(tg[0].Affected))
+	}
+}
+
+func describeRanges(rs []Range) string {
+	parts := make([]string, 0, len(rs))
+	for _, r := range rs {
+		intro := "null"
+		if r.Introduced != nil {
+			intro = *r.Introduced
+		}
+		parts = append(parts, intro+".."+r.Fixed)
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
+// TestBuildFeedsSortsNewestFirstThenByID checks the order the schema
+// promises: newest published first, with id breaking ties so that the
+// output is deterministic.
+func TestBuildFeedsSortsNewestFirstThenByID(t *testing.T) {
+	mk := func(id, published string) RawAdvisory {
+		a := validAdvisory(id)
+		a.PublishedAt = published
+		return a
+	}
+	feeds, err := BuildFeeds([]RawAdvisory{
+		mk("GHSA-pppp-pppp-pppp", "2026-01-01T00:00:00Z"),
+		mk("GHSA-xxxx-xxxx-xxxx", "2026-02-01T00:00:00Z"),
+		mk("GHSA-cccc-cccc-cccc", "2026-01-01T00:00:00Z"),
+	}, testRegistry)
+	if err != nil {
+		t.Fatalf("BuildFeeds: %v", err)
+	}
+	var got []string
+	for _, e := range feeds["telegraf"].Advisories {
+		got = append(got, e.ID)
+	}
+	const want = "GHSA-xxxx-xxxx-xxxx,GHSA-cccc-cccc-cccc,GHSA-pppp-pppp-pppp"
+	if strings.Join(got, ",") != want {
+		t.Errorf("order = %s\nwant    %s", strings.Join(got, ","), want)
+	}
+}
+
+func TestBuildFeedsCapsAdvisoriesPerProduct(t *testing.T) {
+	raw := make([]RawAdvisory, 0, maxAdvisories+1)
+	for i := 0; i < maxAdvisories; i++ {
+		raw = append(raw, validAdvisory(ghsaID(i)))
+	}
+	if _, err := BuildFeeds(raw, testRegistry); err != nil {
+		t.Fatalf("exactly the limit must pass: %v", err)
+	}
+	raw = append(raw, validAdvisory(ghsaID(maxAdvisories)))
+	_, err := BuildFeeds(raw, testRegistry)
+	if err == nil || !strings.Contains(err.Error(), "more than the limit") {
+		t.Fatalf("want a limit error for one advisory over, got %v", err)
 	}
 }

@@ -32,9 +32,9 @@ func TestListAdvisoriesFollowsPagination(t *testing.T) {
 				t.Errorf("per_page = %q, want 100", r.URL.Query().Get("per_page"))
 			}
 			w.Header().Set("Link", fmt.Sprintf(`<%s/repos/o/r/security-advisories?per_page=100&page=2>; rel="next", <%s/x?page=2>; rel="last"`, srv.URL, srv.URL))
-			fmt.Fprint(w, `[{"ghsa_id":"GHSA-aaaa-aaaa-aaaa","state":"published"}]`)
+			fmt.Fprint(w, `[{"ghsa_id":"GHSA-cccc-cccc-cccc","state":"published"}]`)
 		case "2":
-			fmt.Fprint(w, `[{"ghsa_id":"GHSA-bbbb-bbbb-bbbb","state":"withdrawn","withdrawn_at":"2026-01-01T00:00:00Z"}]`)
+			fmt.Fprint(w, `[{"ghsa_id":"GHSA-ffff-ffff-ffff","state":"withdrawn","withdrawn_at":"2026-01-01T00:00:00Z"}]`)
 		default:
 			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
 		}
@@ -47,7 +47,7 @@ func TestListAdvisoriesFollowsPagination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAdvisories: %v", err)
 	}
-	if len(got) != 2 || got[0].GHSAID != "GHSA-aaaa-aaaa-aaaa" || got[1].GHSAID != "GHSA-bbbb-bbbb-bbbb" {
+	if len(got) != 2 || got[0].GHSAID != "GHSA-cccc-cccc-cccc" || got[1].GHSAID != "GHSA-ffff-ffff-ffff" {
 		t.Fatalf("got %+v", got)
 	}
 	if got[1].WithdrawnAt == nil || *got[1].WithdrawnAt != "2026-01-01T00:00:00Z" {
@@ -86,5 +86,67 @@ func TestListAdvisoriesFailsOnBadJSON(t *testing.T) {
 	defer srv.Close()
 	if _, err := testClient(srv).ListAdvisories(context.Background()); err == nil {
 		t.Fatal("want a parse error")
+	}
+}
+
+// TestListAdvisoriesRejectsNextLinkOffOrigin checks that a Link header
+// pointing off the configured API's scheme and host is an error and is
+// never followed, so the bearer token only ever reaches that API.
+func TestListAdvisoriesRejectsNextLinkOffOrigin(t *testing.T) {
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("request reached another host with Authorization=%q", r.Header.Get("Authorization"))
+		fmt.Fprint(w, `[]`)
+	}))
+	defer other.Close()
+
+	cases := []struct {
+		name string
+		next func(apiURL string) string
+	}{
+		{"another host", func(string) string { return other.URL + "/repos/o/r/security-advisories?page=2" }},
+		{"another scheme", func(apiURL string) string {
+			return "https://" + strings.TrimPrefix(apiURL, "http://") + "/repos/o/r/security-advisories?page=2"
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Link", fmt.Sprintf(`<%s>; rel="next"`, tc.next(srv.URL)))
+				fmt.Fprint(w, `[]`)
+			}))
+			defer srv.Close()
+			c := testClient(srv)
+			c.Token = "token"
+			_, err := c.ListAdvisories(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "pagination link") {
+				t.Fatalf("want a pagination link error, got %v", err)
+			}
+		})
+	}
+}
+
+// TestListAdvisoriesCapsPageCount checks that a server which keeps
+// returning a next link cannot make the client fetch without bound. The
+// server stops linking well past the cap only so that a client without
+// one still terminates and fails this test instead of hanging.
+func TestListAdvisoriesCapsPageCount(t *testing.T) {
+	var srv *httptest.Server
+	requests := 0
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests < maxPages+10 {
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repos/o/r/security-advisories?page=%d>; rel="next"`, srv.URL, requests+1))
+		}
+		fmt.Fprint(w, `[]`)
+	}))
+	defer srv.Close()
+
+	_, err := testClient(srv).ListAdvisories(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "pages") {
+		t.Fatalf("want a page count error, got %v", err)
+	}
+	if requests != maxPages {
+		t.Errorf("made %d requests, want exactly %d before giving up", requests, maxPages)
 	}
 }

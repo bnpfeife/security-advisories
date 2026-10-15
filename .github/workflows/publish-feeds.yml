@@ -5,25 +5,33 @@ name: Publish advisory feeds
 # wasm-publish.yml), and uploads the signed feeds to the Cloudflare R2
 # bucket behind https://dl.influxdata.com.
 #
-# Required repository secrets (Settings > Secrets and variables > Actions):
+# Required repository variable (Settings > Secrets and variables > Actions >
+# Variables):
 #   FEED_BASE_URL                 Public base URL the feeds are served
 #                                 from, e.g. https://dl.influxdata.com/security-advisories
+#
+# Required in the "advisory-feeds" environment (Settings > Environments >
+# advisory-feeds), used by the sign-feeds and publish jobs:
+#
+#   Secrets:
 #   QUAY_RSIGN_USERNAME           Quay.io username for pulling the
 #                                 internal rsign image.
 #   QUAY_RSIGN_PASSWORD           Quay.io password/token for the same.
 #   RSIGN_SSH_SECKEY              SSH private key rsign uses to reach the
 #                                 signing service.
-#   CLOUDFLARE_R2_ENDPOINT        R2 S3-compatible endpoint, e.g.
-#                                 https://<account id>.r2.cloudflarestorage.com
 #   CLOUDFLARE_R2_ACCESS_KEY_ID   R2 API token access key ID.
 #   CLOUDFLARE_R2_SECRET_ACCESS_KEY R2 API token secret access key.
+#
+#   Variables:
+#   CLOUDFLARE_R2_ENDPOINT        R2 S3-compatible endpoint, e.g.
+#                                 https://<account id>.r2.cloudflarestorage.com
 #   CLOUDFLARE_R2_BUCKET          Name of the R2 bucket mapped to
 #                                 dl.influxdata.com.
 #
 # The sign job runs on the same self-hosted runner group as
 # influxdb3_ui's signing job, since it needs the same Quay/rsign access.
 #
-# Until these secrets are set, the run logs a warning and stops after
+# Until these are set, the run logs a warning and stops after
 # generating nothing, rather than failing.
 
 on:
@@ -73,7 +81,7 @@ jobs:
         id: generate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FEED_BASE_URL: ${{ secrets.FEED_BASE_URL }}
+          FEED_BASE_URL: ${{ vars.FEED_BASE_URL }}
         run: |
           set -euo pipefail
           if [ -z "$FEED_BASE_URL" ]; then
@@ -103,6 +111,7 @@ jobs:
     name: Sign feeds
     needs: generate
     if: needs.generate.outputs.changed == 'true'
+    environment: advisory-feeds
     runs-on:
       group: self-hosted
     permissions:
@@ -125,7 +134,7 @@ jobs:
         run: |
           docker login quay.io \
             -u "${QUAY_RSIGN_USERNAME}" \
-            -p "${QUAY_RSIGN_PASSWORD}"
+            --password-stdin <<< "${QUAY_RSIGN_PASSWORD}"
           docker image pull quay.io/influxdb/rsign:latest
 
       - name: Sign feeds
@@ -133,16 +142,40 @@ jobs:
         env:
           RSIGN_SSH_SECKEY: ${{ secrets.RSIGN_SSH_SECKEY }}
         run: |
+          set -euo pipefail
           eval "$(ssh-agent -s)"
-          ssh-add - <<< "${RSIGN_SSH_SECKEY}"
           trap 'ssh-agent -k' EXIT
+          ssh-add - <<< "${RSIGN_SSH_SECKEY}"
 
+          # The rsign image only ships sh (dash), not bash. -e makes the
+          # container exit non-zero as soon as any rsign call fails, which
+          # fails this step.
           docker run -i \
               -v "${PWD}:/project" \
               -v "$SSH_AUTH_SOCK:/ssh-agent" \
               -e   SSH_AUTH_SOCK=/ssh-agent  \
               --rm quay.io/influxdb/rsign:latest \
-                  bash -c 'cd /project && for f in *.json; do rsign "$f"; done'
+                  sh -euc '
+                    cd /project
+                    for f in *.json; do
+                      if [ ! -e "$f" ]; then
+                        echo "no feeds found to sign" >&2
+                        exit 1
+                      fi
+                      rsign "$f"
+                    done
+                  '
+
+          # Belt and braces: don't trust rsign's exit code alone; every feed
+          # must have a signature next to it.
+          missing=0
+          for f in *.json; do
+            if [ ! -s "$f.asc" ]; then
+              echo "::error::missing signature for $f"
+              missing=1
+            fi
+          done
+          exit "$missing"
 
       - name: Upload signed feeds
         uses: actions/upload-artifact@v4
@@ -159,8 +192,9 @@ jobs:
 
   publish:
     name: Upload signed feeds to Cloudflare R2
-    needs: sign-feeds
+    needs: [ generate, sign-feeds ]
     if: needs.generate.outputs.changed == 'true'
+    environment: advisory-feeds
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -181,20 +215,20 @@ jobs:
           # PutObject/sync calls fail against R2.
           AWS_REQUEST_CHECKSUM_CALCULATION: when_required
           AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
-          R2_ENDPOINT: ${{ secrets.CLOUDFLARE_R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
+          R2_ENDPOINT: ${{ vars.CLOUDFLARE_R2_ENDPOINT }}
+          R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
         run: |
           set -euo pipefail
           if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$R2_BUCKET" ] || [ -z "$R2_ENDPOINT" ]; then
-            echo "::warning::Cloudflare R2 secrets are not set yet; skipping upload. Feeds were generated and signed but not published."
+            echo "::warning::Cloudflare R2 secrets/variables are not set yet; skipping upload. Feeds were generated and signed but not published."
             exit 0
           fi
           aws s3 sync artifacts/ "s3://${R2_BUCKET}/security-advisories/v1/" \
             --endpoint-url "$R2_ENDPOINT" \
-            --exclude "*" --include "*.json" \
-            --content-type application/json \
+            --exclude "*" --include "*.json.asc" \
             --cache-control "public, max-age=300"
           aws s3 sync artifacts/ "s3://${R2_BUCKET}/security-advisories/v1/" \
             --endpoint-url "$R2_ENDPOINT" \
-            --exclude "*" --include "*.json.asc" \
+            --exclude "*" --include "*.json" \
+            --content-type application/json \
             --cache-control "public, max-age=300"

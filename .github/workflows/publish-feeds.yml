@@ -41,7 +41,9 @@ on:
     # GitHub API.
     - cron: "17 * * * *"
   push:
-    branches: [main]
+    # TEMP(testing): also run on the test branch. Revert before merging.
+    # branches: [main]
+    branches: [main, BNP_security-advisory-cicd-wip]
     paths:
       - "products.json"
       - "cmd/advisory-feed/**"
@@ -205,30 +207,36 @@ jobs:
           name: signed-feeds
           path: artifacts
 
-      - name: Upload to Cloudflare R2
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          # R2's S3-compatible endpoint doesn't support the checksum
-          # headers the AWS CLI sends by default since v2.13; without this
-          # PutObject/sync calls fail against R2.
-          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
-          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
-          R2_ENDPOINT: ${{ vars.CLOUDFLARE_R2_ENDPOINT }}
-          R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-        run: |
-          set -euo pipefail
-          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$R2_BUCKET" ] || [ -z "$R2_ENDPOINT" ]; then
-            echo "::warning::Cloudflare R2 secrets/variables are not set yet; skipping upload. Feeds were generated and signed but not published."
-            exit 0
-          fi
-          aws s3 sync artifacts/ "s3://${R2_BUCKET}/security-advisories/v1/" \
-            --endpoint-url "$R2_ENDPOINT" \
-            --exclude "*" --include "*.json.asc" \
-            --cache-control "public, max-age=300"
-          aws s3 sync artifacts/ "s3://${R2_BUCKET}/security-advisories/v1/" \
-            --endpoint-url "$R2_ENDPOINT" \
-            --exclude "*" --include "*.json" \
-            --content-type application/json \
-            --cache-control "public, max-age=300"
+      # TEMP(testing): R2 upload disabled so test runs don't publish
+      # anything. Just list what would have been uploaded. Revert before
+      # merging.
+      - name: List feeds that would be uploaded (dry run)
+        run: ls -la artifacts/
+
+      # - name: Upload to Cloudflare R2
+      #   env:
+      #     AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      #     AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      #     AWS_DEFAULT_REGION: auto
+      #     # R2's S3-compatible endpoint doesn't support the checksum
+      #     # headers the AWS CLI sends by default since v2.13; without this
+      #     # PutObject/sync calls fail against R2.
+      #     AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      #     AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      #     R2_ENDPOINT: ${{ vars.CLOUDFLARE_R2_ENDPOINT }}
+      #     R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      #   run: |
+      #     set -euo pipefail
+      #     if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$R2_BUCKET" ] || [ -z "$R2_ENDPOINT" ]; then
+      #       echo "::warning::Cloudflare R2 secrets/variables are not set yet; skipping upload. Feeds were generated and signed but not published."
+      #       exit 0
+      #     fi
+      #     aws s3 sync artifacts/ "s3://${R2_BUCKET}/security-advisories/v1/" \
+      #       --endpoint-url "$R2_ENDPOINT" \
+      #       --exclude "*" --include "*.json.asc" \
+      #       --cache-control "public, max-age=300"
+      #     aws s3 sync artifacts/ "s3://${R2_BUCKET}/security-advisories/v1/" \
+      #       --endpoint-url "$R2_ENDPOINT" \
+      #       --exclude "*" --include "*.json" \
+      #       --content-type application/json \
+      #       --cache-control "public, max-age=300"
